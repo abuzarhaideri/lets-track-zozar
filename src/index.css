@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+/* ─── Custom design tokens ─────────────────────────────────────────────── */
+@theme {
+  --color-cream: #faf6ef;
+  --color-cream-dark: #f0ebe0;
+  --color-sage: #7c8f6e;
+  --color-sage-light: #9aab8e;
+  --color-gold: #c9a15a;
+  --color-gold-light: #dbc088;
+  --color-charcoal: #2e2a24;
+  --color-charcoal-muted: #5c564d;
+
+  /* Gendered accent tones — muted & elegant */
+  --color-zoya: #c98b93;
+  --color-zoya-light: #d9a9a0;
+  --color-zoya-soft: #f5e8ea;
+  --color-abuzar: #4f6d5c;
+  --color-abuzar-light: #4a6670;
+  --color-abuzar-soft: #e8eeeb;
+
+  /* Status colors — gentle, never harsh */
+  --color-done: #8ba888;
+  --color-done-glow: #a8c4a5;
+  --color-missed: #c4a090;
+  --color-missed-soft: #e8d5cc;
+
+  --font-heading: "Cormorant Garamond", Georgia, serif;
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-arabic: "Amiri", "Aref Ruqaa", serif;
+
+  --radius-soft: 1rem;
+  --radius-card: 1.5rem;
+}
+
+/* ─── Base styles ────────────────────────────────────────────────────── */
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-cream text-charcoal font-body antialiased;
+    background-image:
+      radial-gradient(ellipse at 20% 0%, rgba(201, 161, 90, 0.06) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 100%, rgba(124, 143, 110, 0.08) 0%, transparent 50%);
+    min-height: 100dvh;
+  }
+
+  ::selection {
+    background-color: rgba(201, 161, 90, 0.25);
+  }
+}
+
+/* ─── Utility classes ────────────────────────────────────────────────── */
+@layer utilities {
+  .font-heading {
+    font-family: var(--font-heading);
+  }
+
+  .font-arabic {
+    font-family: var(--font-arabic);
+  }
+
+  .paper-texture {
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+  }
+
+  .soft-shadow {
+    box-shadow:
+      0 2px 8px rgba(46, 42, 36, 0.04),
+      0 8px 24px rgba(46, 42, 36, 0.06);
+  }
+
+  .glow-today {
+    box-shadow: 0 0 0 2px rgba(201, 161, 90, 0.45);
+  }
+
+  .glow-done {
+    box-shadow: 0 0 8px rgba(139, 168, 136, 0.5);
+  }
+}
