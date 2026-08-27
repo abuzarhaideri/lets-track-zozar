@@ -31,6 +31,7 @@ export function ChecklistColumn({ theme }: ChecklistColumnProps) {
     person,
     todayStats,
     monthXp,
+    storageAvailable,
     toggleDay,
     addTask,
     removeTask,
@@ -96,6 +97,12 @@ export function ChecklistColumn({ theme }: ChecklistColumnProps) {
         <p className="text-xs text-charcoal-muted/70 mt-0.5">
           {formatHijriDate()} AH
         </p>
+
+        {!storageAvailable && (
+          <p className="mt-2 rounded-lg bg-missed-soft/40 px-3 py-2 text-xs text-charcoal-muted">
+            Progress may not save in private browsing — use a normal browser window.
+          </p>
+        )}
 
         {/* Daily progress */}
         <div className="mt-4">

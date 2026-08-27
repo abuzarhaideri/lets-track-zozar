@@ -13,14 +13,15 @@ import { cycleDayStatus } from '../utils/dates';
 import { getPersonMonthXp } from '../utils/xp';
 import {
   addTask,
+  applyPersonUpdate,
   ensureCurrentMonth,
   getTodayStats,
+  isStorageAvailable,
   loadAppData,
   removeTask,
   restoreTask,
   saveAppData,
   setDayStatus,
-  updatePersonData,
   updateTaskLabel,
 } from '../utils/storage';
 
@@ -36,6 +37,7 @@ interface AppDataContextValue {
   getPerson: (id: PersonId) => PersonData;
   getTodayStats: (id: PersonId) => ReturnType<typeof getTodayStats>;
   getMonthXp: (id: PersonId) => ReturnType<typeof getPersonMonthXp>;
+  storageAvailable: boolean;
   toggleDay: (
     personId: PersonId,
     taskId: string,
@@ -54,10 +56,31 @@ const AppDataContext = createContext<AppDataContextValue | null>(null);
 
 export function AppDataProvider({ children }: { children: ReactNode }) {
   const [appData, setAppData] = useState<AppData>(() => loadAppData());
+  const [storageAvailable] = useState(() => isStorageAvailable());
+  const appDataRef = useRef(appData);
   const [undoSnapshots, setUndoSnapshots] = useState<
     Partial<Record<PersonId, DeletedTaskSnapshot>>
   >({});
   const undoTimers = useRef<Partial<Record<PersonId, ReturnType<typeof setTimeout>>>>({});
+
+  // Keep ref in sync for lifecycle saves
+  useEffect(() => {
+    appDataRef.current = appData;
+  }, [appData]);
+
+  // Flush save when user leaves / backgrounds the app (important on mobile)
+  useEffect(() => {
+    const flush = () => saveAppData(appDataRef.current);
+
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flush();
+    });
+
+    return () => {
+      window.removeEventListener('pagehide', flush);
+    };
+  }, []);
 
   const clearUndoTimer = useCallback((personId: PersonId) => {
     const timer = undoTimers.current[personId];
@@ -103,9 +126,17 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const persistPerson = useCallback((personId: PersonId, person: PersonData) => {
-    setAppData((prev) => updatePersonData(prev, personId, person));
-  }, []);
+  /** All mutations go through functional setState to avoid stale overwrites */
+  const mutate = useCallback(
+    (updater: (prev: AppData) => AppData) => {
+      setAppData((prev) => {
+        const next = updater(prev);
+        if (next !== prev) saveAppData(next);
+        return next;
+      });
+    },
+    [],
+  );
 
   const getPerson = useCallback(
     (id: PersonId) => appData[id],
@@ -124,34 +155,45 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       monthKeyStr: string,
       day: number,
     ) => {
-      const person = appData[personId];
-      const task = person.tasks.find((t) => t.id === taskId);
-      const current: DayStatus = task?.months[monthKeyStr]?.days[day] ?? null;
-      const next = cycleDayStatus(current);
-      persistPerson(personId, setDayStatus(person, taskId, monthKeyStr, day, next));
+      mutate((prev) =>
+        applyPersonUpdate(prev, personId, (person) => {
+          const task = person.tasks.find((t) => t.id === taskId);
+          const current: DayStatus =
+            task?.months[monthKeyStr]?.days[day] ?? null;
+          const next = cycleDayStatus(current);
+          return setDayStatus(person, taskId, monthKeyStr, day, next);
+        }),
+      );
     },
-    [appData, persistPerson],
+    [mutate],
   );
 
   const handleRemoveTask = useCallback(
     (personId: PersonId, taskId: string) => {
-      const person = appData[personId];
-      const { person: nextPerson, removed, index } = removeTask(person, taskId);
-      if (!removed || index === -1) return;
+      let snapshot: DeletedTaskSnapshot | null = null;
 
-      persistPerson(personId, nextPerson);
+      mutate((prev) => {
+        const { person: nextPerson, removed, index } = removeTask(
+          prev[personId],
+          taskId,
+        );
+        if (!removed || index === -1) return prev;
+
+        snapshot = { personId, task: removed, index };
+
+        return { ...prev, [personId]: nextPerson };
+      });
+
+      if (!snapshot) return;
 
       clearUndoTimer(personId);
-      setUndoSnapshots((prev) => ({
-        ...prev,
-        [personId]: { personId, task: removed, index },
-      }));
+      setUndoSnapshots((prev) => ({ ...prev, [personId]: snapshot! }));
 
       undoTimers.current[personId] = setTimeout(() => {
         dismissUndo(personId);
       }, UNDO_TIMEOUT_MS);
     },
-    [appData, persistPerson, clearUndoTimer, dismissUndo],
+    [mutate, clearUndoTimer, dismissUndo],
   );
 
   const undoDelete = useCallback(
@@ -166,10 +208,13 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         return next;
       });
 
-      const person = appData[personId];
-      persistPerson(personId, restoreTask(person, snapshot.task, snapshot.index));
+      mutate((prev) =>
+        applyPersonUpdate(prev, personId, (person) =>
+          restoreTask(person, snapshot.task, snapshot.index),
+        ),
+      );
     },
-    [undoSnapshots, appData, persistPerson, clearUndoTimer],
+    [undoSnapshots, mutate, clearUndoTimer],
   );
 
   const value = useMemo<AppDataContextValue>(
@@ -177,25 +222,34 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       getPerson,
       getTodayStats: (id) => getTodayStats(appData[id]),
       getMonthXp,
+      storageAvailable,
       toggleDay,
-      addTask: (id, label) => persistPerson(id, addTask(appData[id], label)),
+      addTask: (id, label) =>
+        mutate((prev) =>
+          applyPersonUpdate(prev, id, (person) => addTask(person, label)),
+        ),
       removeTask: handleRemoveTask,
       undoDelete,
       dismissUndo,
       pendingUndo: (id) => undoSnapshots[id] ?? null,
       updateTaskLabel: (id, taskId, label) =>
-        persistPerson(id, updateTaskLabel(appData[id], taskId, label)),
+        mutate((prev) =>
+          applyPersonUpdate(prev, id, (person) =>
+            updateTaskLabel(person, taskId, label),
+          ),
+        ),
     }),
     [
       appData,
       getPerson,
       getMonthXp,
+      storageAvailable,
       toggleDay,
       handleRemoveTask,
       undoDelete,
       dismissUndo,
       undoSnapshots,
-      persistPerson,
+      mutate,
     ],
   );
 
@@ -216,6 +270,7 @@ export function usePersonData(personId: PersonId) {
     getPerson,
     getTodayStats,
     getMonthXp,
+    storageAvailable,
     toggleDay,
     addTask,
     removeTask,
@@ -233,6 +288,7 @@ export function usePersonData(personId: PersonId) {
     person,
     todayStats,
     monthXp,
+    storageAvailable,
     toggleDay: (taskId: string, monthKeyStr: string, day: number) =>
       toggleDay(personId, taskId, monthKeyStr, day),
     addTask: (label: string) => addTask(personId, label),

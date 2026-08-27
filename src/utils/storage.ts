@@ -3,6 +3,7 @@ import type { AppData, DayStatus, MonthRecord, PersonData, PersonId, Task } from
 import { daysInMonth, generateId, monthKey, todayParts } from './dates';
 
 const STORAGE_KEY = 'zozar-tracker-v1';
+const BACKUP_KEY = 'zozar-tracker-v1-backup';
 
 /** Create empty month record for the given year/month */
 export function createMonthRecord(year: number, month: number): MonthRecord {
@@ -34,6 +35,74 @@ function createDefaultAppData(): AppData {
   };
 }
 
+/** JSON.parse stores object keys as strings — normalize day numbers */
+function normalizeDays(
+  days: Record<string | number, DayStatus> | undefined,
+): Record<number, DayStatus> {
+  const normalized: Record<number, DayStatus> = {};
+  if (!days) return normalized;
+
+  for (const [key, value] of Object.entries(days)) {
+    const day = Number(key);
+    if (day >= 1 && day <= 31 && (value === 'done' || value === 'missed')) {
+      normalized[day] = value;
+    }
+  }
+  return normalized;
+}
+
+function normalizeMonthRecord(raw: Partial<MonthRecord> | undefined): MonthRecord | null {
+  if (!raw || typeof raw.year !== 'number' || typeof raw.month !== 'number') {
+    return null;
+  }
+  return {
+    year: raw.year,
+    month: raw.month,
+    days: normalizeDays(raw.days as Record<string | number, DayStatus>),
+  };
+}
+
+function normalizeTask(raw: Partial<Task> | undefined): Task | null {
+  if (!raw?.id || !raw.label) return null;
+
+  const months: Record<string, MonthRecord> = {};
+  if (raw.months && typeof raw.months === 'object') {
+    for (const [key, record] of Object.entries(raw.months)) {
+      const normalized = normalizeMonthRecord(record);
+      if (normalized) months[key] = normalized;
+    }
+  }
+
+  return { id: raw.id, label: raw.label, months };
+}
+
+function normalizePersonData(raw: Partial<PersonData> | undefined): PersonData | null {
+  if (!raw?.tasks || !Array.isArray(raw.tasks)) return null;
+
+  const tasks = raw.tasks
+    .map((t) => normalizeTask(t))
+    .filter((t): t is Task => t !== null);
+
+  if (tasks.length === 0) return null;
+  return { tasks };
+}
+
+/** Validate and repair loaded data instead of discarding it */
+export function normalizeAppData(raw: unknown): AppData | null {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const data = raw as Partial<AppData>;
+  const zoya = normalizePersonData(data.zoya);
+  const abuzar = normalizePersonData(data.abuzar);
+
+  if (!zoya && !abuzar) return null;
+
+  return {
+    zoya: zoya ?? createDefaultPersonData(),
+    abuzar: abuzar ?? createDefaultPersonData(),
+  };
+}
+
 /**
  * Ensure every task has a record for the current calendar month.
  * Called on load and after month rollover — never deletes old months.
@@ -58,36 +127,76 @@ export function ensureCurrentMonth(person: PersonData): PersonData {
   return changed ? { tasks } : person;
 }
 
-/** Load from localStorage, migrate month if needed */
-export function loadAppData(): AppData {
+function readRawStorage(key: string): string | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
+    return localStorage.getItem(key);
+  } catch {
+    try {
+      return sessionStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function writeRawStorage(key: string, value: string): boolean {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch {
+    try {
+      sessionStorage.setItem(key, value);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/** Persist full app state — also keeps a backup copy */
+export function saveAppData(data: AppData): boolean {
+  const serialized = JSON.stringify(data);
+  const saved = writeRawStorage(STORAGE_KEY, serialized);
+  writeRawStorage(BACKUP_KEY, serialized);
+  return saved;
+}
+
+/** Load from localStorage (with backup fallback), migrate month if needed */
+export function loadAppData(): AppData {
+  const raw = readRawStorage(STORAGE_KEY) ?? readRawStorage(BACKUP_KEY);
+
+  if (!raw) {
+    const fresh = createDefaultAppData();
+    saveAppData(fresh);
+    return fresh;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    const normalized = normalizeAppData(parsed);
+
+    if (!normalized) {
+      // Keep raw backup — don't overwrite with defaults on partial parse failure
+      console.warn('[ZOZAR] Saved data could not be normalized; using defaults.');
       const fresh = createDefaultAppData();
       saveAppData(fresh);
       return fresh;
     }
 
-    const parsed = JSON.parse(raw) as AppData;
     const migrated: AppData = {
-      zoya: ensureCurrentMonth(parsed.zoya ?? createDefaultPersonData()),
-      abuzar: ensureCurrentMonth(parsed.abuzar ?? createDefaultPersonData()),
+      zoya: ensureCurrentMonth(normalized.zoya),
+      abuzar: ensureCurrentMonth(normalized.abuzar),
     };
 
-    if (migrated.zoya !== parsed.zoya || migrated.abuzar !== parsed.abuzar) {
-      saveAppData(migrated);
-    }
+    // Always re-save after load to normalize key formats and ensure current month exists
+    saveAppData(migrated);
     return migrated;
-  } catch {
+  } catch (err) {
+    console.error('[ZOZAR] Failed to parse saved data:', err);
     const fresh = createDefaultAppData();
     saveAppData(fresh);
     return fresh;
   }
-}
-
-/** Persist full app state */
-export function saveAppData(data: AppData): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 }
 
 /** Get one person's slice */
@@ -104,6 +213,17 @@ export function updatePersonData(
   const next = { ...data, [personId]: person };
   saveAppData(next);
   return next;
+}
+
+/** Apply a person update using latest full app state (avoids stale overwrites) */
+export function applyPersonUpdate(
+  data: AppData,
+  personId: PersonId,
+  updater: (person: PersonData) => PersonData,
+): AppData {
+  const nextPerson = updater(data[personId]);
+  if (nextPerson === data[personId]) return data;
+  return updatePersonData(data, personId, nextPerson);
 }
 
 /** Set day status for a task in a specific month */
@@ -180,7 +300,6 @@ export function restoreTask(
 ): PersonData {
   const tasks = [...person.tasks];
   const safeIndex = Math.min(Math.max(0, index), tasks.length);
-  // Avoid duplicate if already restored
   if (tasks.some((t) => t.id === task.id)) return person;
   tasks.splice(safeIndex, 0, task);
   return { tasks };
@@ -215,7 +334,7 @@ export function getTodayStats(person: PersonData): {
   const { year, month, day } = todayParts();
   const key = monthKey(year, month);
   let done = 0;
-  let total = person.tasks.length;
+  const total = person.tasks.length;
 
   for (const task of person.tasks) {
     const record = task.months[key];
@@ -237,4 +356,16 @@ export function getMonthSummary(
     if (days[d] === 'done') done++;
   }
   return { done, total };
+}
+
+/** Whether browser storage is usable */
+export function isStorageAvailable(): boolean {
+  try {
+    const test = '__zozar_storage_test__';
+    localStorage.setItem(test, '1');
+    localStorage.removeItem(test);
+    return true;
+  } catch {
+    return false;
+  }
 }
