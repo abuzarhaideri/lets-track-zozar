@@ -30,7 +30,9 @@ export function MonthCalendarStrip({
   isCurrentMonth,
   onToggleDay,
 }: MonthCalendarStripProps) {
-  const [expanded, setExpanded] = useState(isCurrentMonth);
+  const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
+  const expanded = userExpanded ?? isCurrentMonth;
+
   const { year, month, days } = monthRecord;
   const key = monthKey(year, month);
   const totalDays = daysInMonth(year, month);
@@ -46,7 +48,7 @@ export function MonthCalendarStrip({
       <div className="mt-2">
         <button
           type="button"
-          onClick={() => setExpanded((e) => !e)}
+          onClick={() => setUserExpanded((e) => !(e ?? isCurrentMonth))}
           className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm text-charcoal-muted transition-colors hover:bg-cream-dark/50"
           aria-expanded={expanded}
         >

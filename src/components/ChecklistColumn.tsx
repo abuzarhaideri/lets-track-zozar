@@ -3,8 +3,16 @@ import { useState } from 'react';
 import { ENCOURAGEMENT } from '../constants/phrases';
 import { usePersonData } from '../hooks/usePersonData';
 import type { PersonTheme } from '../types';
-import { formatGregorianDate, formatHijriDate } from '../utils/dates';
-import { formatTotalXp } from '../utils/xp';
+import {
+  formatGregorianDate,
+  formatHijriDate,
+  formatMonthLabel,
+  getRecentPastMonthOptions,
+  monthKey,
+  parseMonthKey,
+  todayParts,
+} from '../utils/dates';
+import { formatTotalXp, getPersonMonthXp } from '../utils/xp';
 import { CalligraphyBanner } from './CalligraphyBanner';
 import { TaskRow } from './TaskRow';
 import { UndoToast } from './UndoToast';
@@ -30,7 +38,7 @@ export function ChecklistColumn({ theme }: ChecklistColumnProps) {
   const {
     person,
     todayStats,
-    monthXp,
+    allMonthKeys,
     storageAvailable,
     toggleDay,
     addTask,
@@ -39,9 +47,19 @@ export function ChecklistColumn({ theme }: ChecklistColumnProps) {
     undoDelete,
     dismissUndo,
     pendingUndo,
+    addPastMonth,
   } = usePersonData(theme.id);
+
+  const { year, month } = todayParts();
+  const currentMonthKey = monthKey(year, month);
+  const [selectedMonthKey, setSelectedMonthKey] = useState(currentMonthKey);
   const [newTask, setNewTask] = useState('');
   const [showAdd, setShowAdd] = useState(false);
+
+  const { year: activeYear, month: activeMonth } = parseMonthKey(selectedMonthKey);
+  const activeMonthXp = getPersonMonthXp(person, activeYear, activeMonth);
+
+  const pastMonthOptions = getRecentPastMonthOptions(12);
 
   const progress =
     todayStats.total > 0 ? (todayStats.done / todayStats.total) * 100 : 0;
@@ -80,15 +98,22 @@ export function ChecklistColumn({ theme }: ChecklistColumnProps) {
             {theme.name}&apos;s Amal
           </h2>
           <motion.span
-            key={monthXp.totalXp}
+            key={activeMonthXp.totalXp}
             initial={{ opacity: 0.7, y: -4 }}
             animate={{ opacity: 1, y: 0 }}
             className="rounded-full px-3 py-0.5 text-xs font-medium text-white soft-shadow"
             style={{ backgroundColor: theme.accent }}
-            title="Total XP this month (1 XP per check, +10 per week streak)"
+            title="Total XP earned for selected month (1 XP per check, +10 per week streak)"
           >
-            {formatTotalXp(monthXp)}
+            {formatTotalXp(activeMonthXp)}
           </motion.span>
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-white/70 border border-cream-dark px-2.5 py-0.5 text-[10px] font-medium text-charcoal-muted shadow-2xs"
+            title="Progress is automatically saved to browser local storage & backup"
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            Auto-saved
+          </span>
         </div>
 
         <p className="text-xs sm:text-sm text-charcoal-muted">
@@ -123,6 +148,62 @@ export function ChecklistColumn({ theme }: ChecklistColumnProps) {
           </div>
           <p className="mt-2 text-xs italic text-charcoal-muted/80">{message}</p>
         </div>
+
+        {/* Month Selector / History Controls */}
+        <div className="mt-4 border-t border-cream-dark/60 pt-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <span className="text-[11px] font-semibold text-charcoal-muted uppercase tracking-wider">
+              📅 History & Months
+            </span>
+
+            {/* Quick dropdown to initialize any past month */}
+            <select
+              onChange={(e) => {
+                if (e.target.value) {
+                  addPastMonth(e.target.value);
+                  setSelectedMonthKey(e.target.value);
+                  e.target.value = '';
+                }
+              }}
+              className="rounded-xl border border-cream-dark bg-white/80 px-2.5 py-1 text-xs text-charcoal shadow-2xs outline-none hover:border-sage/50 cursor-pointer"
+              defaultValue=""
+            >
+              <option value="" disabled>
+                + Track Past Month...
+              </option>
+              {pastMonthOptions.map((opt) => (
+                <option key={opt.key} value={opt.key}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex flex-wrap gap-1.5">
+            {allMonthKeys.map((key) => {
+              const { year: y, month: m } = parseMonthKey(key);
+              const label = formatMonthLabel(y, m);
+              const isCurrent = key === currentMonthKey;
+              const isSelected = selectedMonthKey === key;
+
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setSelectedMonthKey(key)}
+                  className={`rounded-xl px-3 py-1 text-xs font-medium transition-all ${
+                    isSelected
+                      ? 'text-white shadow-xs font-semibold'
+                      : 'bg-white/60 text-charcoal-muted border border-cream-dark hover:bg-white hover:text-charcoal'
+                  }`}
+                  style={isSelected ? { backgroundColor: theme.accent } : undefined}
+                >
+                  {label} {isCurrent ? '(Current)' : ''}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </header>
 
       {/* Task list */}
@@ -138,6 +219,7 @@ export function ChecklistColumn({ theme }: ChecklistColumnProps) {
             key={task.id}
             task={task}
             theme={theme}
+            selectedMonthKey={selectedMonthKey}
             onToggleDay={toggleDay}
             onUpdateLabel={updateTaskLabel}
             onRemove={removeTask}

@@ -41,7 +41,10 @@ export function DateCell({
   }
 
   const ringStyle = today
-    ? { boxShadow: `0 0 0 2px ${accentColor}55` }
+    ? {
+        boxShadow: `0 0 0 2.5px ${accentColor}, 0 0 10px ${accentColor}40`,
+        borderColor: accentColor,
+      }
     : undefined;
 
   return (
@@ -49,13 +52,13 @@ export function DateCell({
       type="button"
       disabled={!editable}
       onClick={editable ? onToggle : undefined}
-      className={`${baseClasses} ${stateClasses}`}
+      className={`${baseClasses} ${stateClasses} ${today ? 'font-bold' : ''}`}
       style={ringStyle}
       whileTap={editable ? { scale: 0.88 } : undefined}
-      whileHover={editable ? { scale: 1.06 } : undefined}
+      whileHover={editable ? { scale: 1.08 } : undefined}
       transition={{ type: 'spring', stiffness: 400, damping: 20 }}
       aria-label={`Day ${day}${status === 'done' ? ', done' : status === 'missed' ? ', missed' : ''}${today ? ', today' : ''}`}
-      title={`${day}${today ? ' (today)' : ''}`}
+      title={`${day}${today ? ' (TODAY - Click to toggle)' : ''}`}
     >
       {status === 'done' && (
         <motion.span
@@ -76,7 +79,15 @@ export function DateCell({
         </motion.span>
       )}
       {status === null && (
-        <span className="text-[10px] sm:text-xs opacity-70">{day}</span>
+        <span className={`text-[10px] sm:text-xs ${today ? 'font-bold opacity-100' : 'opacity-70'}`}>
+          {day}
+        </span>
+      )}
+      {today && status === null && (
+        <span
+          className="absolute -top-1 -right-1 h-2 w-2 rounded-full animate-pulse"
+          style={{ backgroundColor: accentColor }}
+        />
       )}
     </motion.button>
   );

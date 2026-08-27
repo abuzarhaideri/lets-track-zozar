@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion';
 import { useState } from 'react';
 import { ABUZAR_THEME, ZOYA_THEME } from '../constants/theme';
+import { BackupModal } from './BackupModal';
 import { ChecklistColumn } from './ChecklistColumn';
 
 interface TrackerViewProps {
@@ -15,6 +16,7 @@ interface TrackerViewProps {
  */
 export function TrackerView({ onBack, initialTab = 'zoya' }: TrackerViewProps) {
   const [mobileTab, setMobileTab] = useState<'zoya' | 'abuzar'>(initialTab);
+  const [isBackupOpen, setIsBackupOpen] = useState(false);
 
   return (
     <motion.div
@@ -37,7 +39,14 @@ export function TrackerView({ onBack, initialTab = 'zoya' }: TrackerViewProps) {
           <h1 className="font-heading text-lg sm:text-xl font-semibold text-charcoal">
             LET&apos;S TRACK ZOZAR
           </h1>
-          <div className="w-14" />
+          <button
+            type="button"
+            onClick={() => setIsBackupOpen(true)}
+            className="rounded-xl border border-cream-dark bg-white/80 px-3 py-1.5 text-xs font-semibold text-charcoal shadow-sm transition-colors hover:border-sage/50"
+            title="Backup or restore progress data"
+          >
+            💾 Backup
+          </button>
         </div>
 
         {/* Mobile tab switcher */}
@@ -82,6 +91,8 @@ export function TrackerView({ onBack, initialTab = 'zoya' }: TrackerViewProps) {
           <ChecklistColumn theme={ABUZAR_THEME} />
         </div>
       </div>
+
+      <BackupModal isOpen={isBackupOpen} onClose={() => setIsBackupOpen(false)} />
     </motion.div>
   );
 }

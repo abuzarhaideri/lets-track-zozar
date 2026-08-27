@@ -12,13 +12,19 @@ import type { AppData, DayStatus, PersonData, PersonId, Task } from '../types';
 import { cycleDayStatus } from '../utils/dates';
 import { getPersonMonthXp } from '../utils/xp';
 import {
+  addMonthToPerson,
   addTask,
   applyPersonUpdate,
   ensureCurrentMonth,
+  exportAppDataJson,
+  getAllPersonMonthKeys,
   getTodayStats,
+  importAppDataJson,
   isStorageAvailable,
   loadAppData,
+  loadFromIndexedDB,
   removeTask,
+  resetAppData,
   restoreTask,
   saveAppData,
   setDayStatus,
@@ -50,6 +56,11 @@ interface AppDataContextValue {
   dismissUndo: (personId: PersonId) => void;
   pendingUndo: (personId: PersonId) => DeletedTaskSnapshot | null;
   updateTaskLabel: (personId: PersonId, taskId: string, label: string) => void;
+  addPastMonth: (personId: PersonId, monthKeyStr: string) => void;
+  getAllMonthKeys: (personId: PersonId) => string[];
+  exportData: () => string;
+  importData: (jsonString: string) => boolean;
+  resetData: () => void;
 }
 
 const AppDataContext = createContext<AppDataContextValue | null>(null);
@@ -68,17 +79,62 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     appDataRef.current = appData;
   }, [appData]);
 
+  // Request browser storage persistence & check IndexedDB fallback
+  useEffect(() => {
+    if (navigator.storage?.persist) {
+      navigator.storage.persist().catch(() => {});
+    }
+
+    loadFromIndexedDB().then((idbData) => {
+      if (idbData) {
+        setAppData((prev) => {
+          // If current state has default tasks without checkmarks, prefer idbData if it has checkmarks
+          const hasPrevChecks = Object.values(prev.zoya.tasks)
+            .concat(Object.values(prev.abuzar.tasks))
+            .some((t) => Object.values(t.months).some((m) => Object.keys(m.days).length > 0));
+          if (!hasPrevChecks) {
+            return idbData;
+          }
+          return prev;
+        });
+      }
+    });
+  }, []);
+
+  // Reactive state persistence: Save whenever appData state changes
+  useEffect(() => {
+    saveAppData(appData);
+  }, [appData]);
+
+  // Sync state across browser tabs/windows
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'zozar-tracker-v1' && e.newValue) {
+        try {
+          const fresh = loadAppData();
+          setAppData(fresh);
+        } catch {
+          // Ignore parse errors from other tabs
+        }
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
+
   // Flush save when user leaves / backgrounds the app (important on mobile)
   useEffect(() => {
     const flush = () => saveAppData(appDataRef.current);
 
     window.addEventListener('pagehide', flush);
-    document.addEventListener('visibilitychange', () => {
+    const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') flush();
-    });
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, []);
 
@@ -109,9 +165,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         const zoya = ensureCurrentMonth(prev.zoya);
         const abuzar = ensureCurrentMonth(prev.abuzar);
         if (zoya === prev.zoya && abuzar === prev.abuzar) return prev;
-        const next = { zoya, abuzar };
-        saveAppData(next);
-        return next;
+        return { zoya, abuzar };
       });
     };
 
@@ -129,14 +183,27 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   /** All mutations go through functional setState to avoid stale overwrites */
   const mutate = useCallback(
     (updater: (prev: AppData) => AppData) => {
-      setAppData((prev) => {
-        const next = updater(prev);
-        if (next !== prev) saveAppData(next);
-        return next;
-      });
+      setAppData((prev) => updater(prev));
     },
     [],
   );
+
+  const exportData = useCallback(() => exportAppDataJson(appDataRef.current), []);
+
+  const importData = useCallback((jsonString: string) => {
+    const imported = importAppDataJson(jsonString);
+    if (imported) {
+      setAppData(imported);
+      saveAppData(imported);
+      return true;
+    }
+    return false;
+  }, []);
+
+  const handleResetData = useCallback(() => {
+    const fresh = resetAppData();
+    setAppData(fresh);
+  }, []);
 
   const getPerson = useCallback(
     (id: PersonId) => appData[id],
@@ -238,6 +305,16 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
             updateTaskLabel(person, taskId, label),
           ),
         ),
+      addPastMonth: (id, monthKeyStr) =>
+        mutate((prev) =>
+          applyPersonUpdate(prev, id, (person) =>
+            addMonthToPerson(person, monthKeyStr),
+          ),
+        ),
+      getAllMonthKeys: (id) => getAllPersonMonthKeys(appData[id]),
+      exportData,
+      importData,
+      resetData: handleResetData,
     }),
     [
       appData,
@@ -250,6 +327,9 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       dismissUndo,
       undoSnapshots,
       mutate,
+      exportData,
+      importData,
+      handleResetData,
     ],
   );
 
@@ -278,16 +358,20 @@ export function usePersonData(personId: PersonId) {
     dismissUndo,
     pendingUndo,
     updateTaskLabel,
+    addPastMonth,
+    getAllMonthKeys,
   } = useAppData();
 
   const person = getPerson(personId);
   const todayStats = getTodayStats(personId);
   const monthXp = getMonthXp(personId);
+  const allMonthKeys = getAllMonthKeys(personId);
 
   return {
     person,
     todayStats,
     monthXp,
+    allMonthKeys,
     storageAvailable,
     toggleDay: (taskId: string, monthKeyStr: string, day: number) =>
       toggleDay(personId, taskId, monthKeyStr, day),
@@ -298,5 +382,6 @@ export function usePersonData(personId: PersonId) {
     pendingUndo: pendingUndo(personId),
     updateTaskLabel: (taskId: string, label: string) =>
       updateTaskLabel(personId, taskId, label),
+    addPastMonth: (monthKeyStr: string) => addPastMonth(personId, monthKeyStr),
   };
 }

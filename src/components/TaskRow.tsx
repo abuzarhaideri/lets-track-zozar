@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion';
 import { useEffect, useState } from 'react';
 import type { PersonTheme, Task } from '../types';
-import { monthKey, todayParts } from '../utils/dates';
+import { monthKey, parseMonthKey, todayParts } from '../utils/dates';
 import { getSortedMonthKeys } from '../utils/storage';
 import { formatTaskXp, getTaskMonthXp } from '../utils/xp';
 import { MonthCalendarStrip } from './MonthCalendarStrip';
@@ -9,6 +9,7 @@ import { MonthCalendarStrip } from './MonthCalendarStrip';
 interface TaskRowProps {
   task: Task;
   theme: PersonTheme;
+  selectedMonthKey?: string;
   onToggleDay: (taskId: string, monthKeyStr: string, day: number) => void;
   onUpdateLabel: (taskId: string, label: string) => void;
   onRemove: (taskId: string) => void;
@@ -21,6 +22,7 @@ interface TaskRowProps {
 export function TaskRow({
   task,
   theme,
+  selectedMonthKey,
   onToggleDay,
   onUpdateLabel,
   onRemove,
@@ -28,10 +30,14 @@ export function TaskRow({
 }: TaskRowProps) {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(task.label);
-  const { year, month } = todayParts();
+  const { year, month, day } = todayParts();
   const currentKey = monthKey(year, month);
+  const activeKey = selectedMonthKey || currentKey;
+  const { year: activeYear, month: activeMonth } = parseMonthKey(activeKey);
+
   const sortedKeys = getSortedMonthKeys(task);
-  const taskXp = getTaskMonthXp(task, year, month);
+  const taskXp = getTaskMonthXp(task, activeYear, activeMonth);
+  const todayStatus = task.months[currentKey]?.days[day] ?? null;
 
   // Keep edit field in sync if label changes externally (e.g. undo)
   useEffect(() => {
@@ -116,20 +122,40 @@ export function TaskRow({
         </div>
 
         {!editing && (
-          <div className="flex shrink-0 items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1.5">
+            {/* Quick Check Today Button */}
+            <motion.button
+              type="button"
+              onClick={() => onToggleDay(task.id, currentKey, day)}
+              whileTap={{ scale: 0.92 }}
+              className={`flex items-center gap-1 rounded-xl px-2.5 py-1 text-xs font-medium transition-all ${
+                todayStatus === 'done'
+                  ? 'bg-done text-white shadow-sm glow-done'
+                  : todayStatus === 'missed'
+                  ? 'bg-missed-soft text-missed border border-missed/30'
+                  : 'border border-cream-dark bg-white/80 text-charcoal hover:border-sage/60'
+              }`}
+              title="Click to toggle today's status"
+            >
+              <span>Today:</span>
+              <span className="font-bold">
+                {todayStatus === 'done' ? '✓ Done' : todayStatus === 'missed' ? '✕ Missed' : '+ Mark'}
+              </span>
+            </motion.button>
+
             <button
               type="button"
               onClick={() => setEditing(true)}
-              className="rounded-lg px-2 py-1 text-xs text-charcoal-muted transition-colors hover:bg-cream-dark/60 hover:text-charcoal"
+              className="rounded-lg px-1.5 py-1 text-xs text-charcoal-muted transition-colors hover:bg-cream-dark/60 hover:text-charcoal"
               aria-label="Edit task"
-              title="Edit task"
+              title="Edit task label"
             >
               Edit
             </button>
             <button
               type="button"
               onClick={() => onRemove(task.id)}
-              className="rounded-lg px-2 py-1 text-xs text-charcoal-muted/60 transition-colors hover:bg-missed-soft/50 hover:text-missed"
+              className="rounded-lg px-1.5 py-1 text-xs text-charcoal-muted/60 transition-colors hover:bg-missed-soft/50 hover:text-missed"
               aria-label="Delete task"
               title="Delete task"
             >
@@ -156,7 +182,7 @@ export function TaskRow({
               monthRecord={record}
               taskId={task.id}
               accentColor={theme.accent}
-              isCurrentMonth={key === currentKey}
+              isCurrentMonth={key === activeKey}
               onToggleDay={onToggleDay}
             />
           );

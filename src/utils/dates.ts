@@ -99,3 +99,22 @@ export function countDoneInMonth(
 export function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
+
+/** Generate past month options (up to count months ago) */
+export function getRecentPastMonthOptions(
+  count: number = 12,
+): Array<{ key: string; label: string }> {
+  const { year, month } = todayParts();
+  const options: Array<{ key: string; label: string }> = [];
+
+  for (let i = 0; i < count; i++) {
+    const d = new Date(year, month - i, 1);
+    const y = d.getFullYear();
+    const m = d.getMonth();
+    const key = monthKey(y, m);
+    const label = formatMonthLabel(y, m);
+    options.push({ key, label });
+  }
+
+  return options;
+}

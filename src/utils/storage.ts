@@ -1,6 +1,6 @@
 import { DEFAULT_TASK_LABELS } from '../constants/defaultTasks';
 import type { AppData, DayStatus, MonthRecord, PersonData, PersonId, Task } from '../types';
-import { daysInMonth, generateId, monthKey, todayParts } from './dates';
+import { daysInMonth, generateId, monthKey, parseMonthKey, todayParts } from './dates';
 
 const STORAGE_KEY = 'zozar-tracker-v1';
 const BACKUP_KEY = 'zozar-tracker-v1-backup';
@@ -37,15 +37,19 @@ function createDefaultAppData(): AppData {
 
 /** JSON.parse stores object keys as strings — normalize day numbers */
 function normalizeDays(
-  days: Record<string | number, DayStatus> | undefined,
+  days: Record<string | number, DayStatus | boolean | string> | undefined,
 ): Record<number, DayStatus> {
   const normalized: Record<number, DayStatus> = {};
   if (!days) return normalized;
 
   for (const [key, value] of Object.entries(days)) {
     const day = Number(key);
-    if (day >= 1 && day <= 31 && (value === 'done' || value === 'missed')) {
-      normalized[day] = value;
+    if (day >= 1 && day <= 31) {
+      if (value === 'done' || value === true || value === 'checked') {
+        normalized[day] = 'done';
+      } else if (value === 'missed') {
+        normalized[day] = 'missed';
+      }
     }
   }
   return normalized;
@@ -83,7 +87,6 @@ function normalizePersonData(raw: Partial<PersonData> | undefined): PersonData |
     .map((t) => normalizeTask(t))
     .filter((t): t is Task => t !== null);
 
-  if (tasks.length === 0) return null;
   return { tasks };
 }
 
@@ -127,76 +130,168 @@ export function ensureCurrentMonth(person: PersonData): PersonData {
   return changed ? { tasks } : person;
 }
 
+const IDB_NAME = 'zozar-db';
+const IDB_STORE = 'app_data';
+
+function openIDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      return reject(new Error('IndexedDB unavailable'));
+    }
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) {
+        db.createObjectStore(IDB_STORE);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function saveToIndexedDB(data: AppData): Promise<void> {
+  try {
+    const db = await openIDB();
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    const store = tx.objectStore(IDB_STORE);
+    store.put(data, STORAGE_KEY);
+  } catch (err) {
+    console.warn('[ZOZAR] IndexedDB save failed:', err);
+  }
+}
+
+export async function loadFromIndexedDB(): Promise<AppData | null> {
+  try {
+    const db = await openIDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const store = tx.objectStore(IDB_STORE);
+      const req = store.get(STORAGE_KEY);
+      req.onsuccess = () => {
+        const normalized = normalizeAppData(req.result);
+        resolve(normalized);
+      };
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
 function readRawStorage(key: string): string | null {
   try {
-    return localStorage.getItem(key);
-  } catch {
-    try {
-      return sessionStorage.getItem(key);
-    } catch {
-      return null;
-    }
+    const val = localStorage.getItem(key);
+    if (val !== null) return val;
+  } catch (e) {
+    console.warn(`[ZOZAR] Failed reading localStorage for ${key}:`, e);
+  }
+  try {
+    return sessionStorage.getItem(key);
+  } catch (e) {
+    console.warn(`[ZOZAR] Failed reading sessionStorage for ${key}:`, e);
+    return null;
   }
 }
 
 function writeRawStorage(key: string, value: string): boolean {
+  let success = false;
   try {
     localStorage.setItem(key, value);
-    return true;
-  } catch {
-    try {
-      sessionStorage.setItem(key, value);
-      return true;
-    } catch {
-      return false;
-    }
+    success = true;
+  } catch (e) {
+    console.warn(`[ZOZAR] Failed to write to localStorage for key ${key}:`, e);
   }
+  try {
+    sessionStorage.setItem(key, value);
+    success = true;
+  } catch (e) {
+    console.warn(`[ZOZAR] Failed to write to sessionStorage for key ${key}:`, e);
+  }
+  return success;
 }
 
-/** Persist full app state — also keeps a backup copy */
+/** Persist full app state — keeps primary, backup, and IndexedDB synchronized */
 export function saveAppData(data: AppData): boolean {
   const serialized = JSON.stringify(data);
   const saved = writeRawStorage(STORAGE_KEY, serialized);
   writeRawStorage(BACKUP_KEY, serialized);
+  saveToIndexedDB(data).catch(() => {});
   return saved;
 }
 
 /** Load from localStorage (with backup fallback), migrate month if needed */
 export function loadAppData(): AppData {
-  const raw = readRawStorage(STORAGE_KEY) ?? readRawStorage(BACKUP_KEY);
+  const rawPrimary = readRawStorage(STORAGE_KEY);
+  const rawBackup = readRawStorage(BACKUP_KEY);
 
-  if (!raw) {
+  let parsed: unknown = null;
+  if (rawPrimary) {
+    try {
+      parsed = JSON.parse(rawPrimary);
+    } catch {
+      console.warn('[ZOZAR] Primary storage JSON corrupted. Trying backup...');
+    }
+  }
+
+  if (!parsed && rawBackup) {
+    try {
+      parsed = JSON.parse(rawBackup);
+    } catch {
+      console.warn('[ZOZAR] Backup storage JSON corrupted.');
+    }
+  }
+
+  if (!parsed) {
     const fresh = createDefaultAppData();
     saveAppData(fresh);
     return fresh;
   }
 
+  const normalized = normalizeAppData(parsed);
+
+  if (!normalized) {
+    console.warn('[ZOZAR] Saved data could not be normalized; using defaults.');
+    const fresh = createDefaultAppData();
+    saveAppData(fresh);
+    return fresh;
+  }
+
+  const migrated: AppData = {
+    zoya: ensureCurrentMonth(normalized.zoya),
+    abuzar: ensureCurrentMonth(normalized.abuzar),
+  };
+
+  saveAppData(migrated);
+  return migrated;
+}
+
+/** Export current AppData as nicely formatted JSON string */
+export function exportAppDataJson(data: AppData): string {
+  return JSON.stringify(data, null, 2);
+}
+
+/** Parse and validate imported JSON string into AppData */
+export function importAppDataJson(jsonString: string): AppData | null {
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    const normalized = normalizeAppData(parsed);
-
-    if (!normalized) {
-      // Keep raw backup — don't overwrite with defaults on partial parse failure
-      console.warn('[ZOZAR] Saved data could not be normalized; using defaults.');
-      const fresh = createDefaultAppData();
-      saveAppData(fresh);
-      return fresh;
-    }
-
-    const migrated: AppData = {
+    const raw = JSON.parse(jsonString);
+    const normalized = normalizeAppData(raw);
+    if (!normalized) return null;
+    return {
       zoya: ensureCurrentMonth(normalized.zoya),
       abuzar: ensureCurrentMonth(normalized.abuzar),
     };
-
-    // Always re-save after load to normalize key formats and ensure current month exists
-    saveAppData(migrated);
-    return migrated;
   } catch (err) {
-    console.error('[ZOZAR] Failed to parse saved data:', err);
-    const fresh = createDefaultAppData();
-    saveAppData(fresh);
-    return fresh;
+    console.error('[ZOZAR] Failed to import JSON data:', err);
+    return null;
   }
+}
+
+/** Reset app data back to fresh defaults */
+export function resetAppData(): AppData {
+  const fresh = createDefaultAppData();
+  saveAppData(fresh);
+  return fresh;
 }
 
 /** Get one person's slice */
@@ -204,15 +299,13 @@ export function getPersonData(data: AppData, personId: PersonId): PersonData {
   return data[personId];
 }
 
-/** Replace one person's slice and save */
+/** Replace one person's slice */
 export function updatePersonData(
   data: AppData,
   personId: PersonId,
   person: PersonData,
 ): AppData {
-  const next = { ...data, [personId]: person };
-  saveAppData(next);
-  return next;
+  return { ...data, [personId]: person };
 }
 
 /** Apply a person update using latest full app state (avoids stale overwrites) */
@@ -234,12 +327,14 @@ export function setDayStatus(
   day: number,
   status: DayStatus,
 ): PersonData {
+  const { year, month } = parseMonthKey(monthKeyStr);
+
   const tasks = person.tasks.map((task) => {
     if (task.id !== taskId) return task;
-    const month = task.months[monthKeyStr];
-    if (!month) return task;
+    const monthRecord =
+      task.months[monthKeyStr] ?? createMonthRecord(year, month);
 
-    const nextDays = { ...month.days };
+    const nextDays = { ...monthRecord.days };
     if (status === null) {
       delete nextDays[day];
     } else {
@@ -250,7 +345,7 @@ export function setDayStatus(
       ...task,
       months: {
         ...task.months,
-        [monthKeyStr]: { ...month, days: nextDays },
+        [monthKeyStr]: { ...monthRecord, days: nextDays },
       },
     };
   });
@@ -324,6 +419,41 @@ export function updateTaskLabel(
 /** Sorted month keys for a task (newest first) */
 export function getSortedMonthKeys(task: Task): string[] {
   return Object.keys(task.months).sort((a, b) => b.localeCompare(a));
+}
+
+/** Gather all unique month keys recorded across all tasks for a person (sorted newest first) */
+export function getAllPersonMonthKeys(person: PersonData): string[] {
+  const { year, month } = todayParts();
+  const currentKey = monthKey(year, month);
+  const keySet = new Set<string>([currentKey]);
+
+  for (const task of person.tasks) {
+    for (const k of Object.keys(task.months)) {
+      keySet.add(k);
+    }
+  }
+
+  return Array.from(keySet).sort((a, b) => b.localeCompare(a));
+}
+
+/** Ensure a specific month (e.g. past month) is initialized across all tasks for a person */
+export function addMonthToPerson(person: PersonData, monthKeyStr: string): PersonData {
+  const { year, month } = parseMonthKey(monthKeyStr);
+  let changed = false;
+
+  const tasks = person.tasks.map((task) => {
+    if (task.months[monthKeyStr]) return task;
+    changed = true;
+    return {
+      ...task,
+      months: {
+        ...task.months,
+        [monthKeyStr]: createMonthRecord(year, month),
+      },
+    };
+  });
+
+  return changed ? { tasks } : person;
 }
 
 /** Today's completion stats for encouragement message */
